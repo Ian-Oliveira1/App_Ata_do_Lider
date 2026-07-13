@@ -15,7 +15,7 @@ import ast
 # ==============================
 
 st.set_page_config(page_title="App Ata Lider", layout="wide")
-st.title("📊 Monitor de Ocorrências Teste online")
+st.title("📊 Monitor de Ocorrências")
 
 # ==============================
 # STATE (NAVEGAÇÃO)
