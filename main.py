@@ -1,5 +1,5 @@
-#Versão 1.2
-#última alteração no código 06/07/2026
+#Versão 1.4.4
+#última alteração no código 03/08/2026
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -9,6 +9,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 import re
 import ast
+import unicodedata
+
+import altair as alt
+import numpy as np
 
 # ==============================
 # CONFIG
@@ -16,6 +20,13 @@ import ast
 
 st.set_page_config(page_title="App Ata Lider", layout="wide")
 st.title("📊 Monitor de Ocorrências")
+
+pagina_menu = st.sidebar.radio("Navegação de Funcionalidades",
+    [
+        "📋 Ocorrências",
+        "📊 Análise de Indicadores"
+    ]
+)
 
 # ==============================
 # STATE (NAVEGAÇÃO)
@@ -30,7 +41,32 @@ if "idx_selecionado" not in st.session_state:
 if "pagina_cards" not in st.session_state:
     st.session_state.pagina_cards = 0
 
+if "similares_confirmados" not in st.session_state:
+    st.session_state.similares_confirmados = []
 
+if "pagina_analise" not in st.session_state:
+    st.session_state.pagina_analise = "lista"
+
+if "grupo_selecionado" not in st.session_state:
+    st.session_state.grupo_selecionado = None
+
+if "grupo_confirmado" not in st.session_state:
+    st.session_state.grupo_confirmado = None
+
+if "titulo_grupo" not in st.session_state:
+    st.session_state.titulo_grupo = ""
+
+if "df_indicador_analise" not in st.session_state:
+    st.session_state.df_indicador_analise = None
+
+if "filtros_analise" not in st.session_state:
+    st.session_state.filtros_analise = {}
+
+if "filtros_grupo" not in st.session_state:
+    st.session_state.filtros_grupo = {}
+
+if "checkbox_grupo" not in st.session_state:
+    st.session_state.checkbox_grupo = {}
 # ==============================
 # FUNÇÕES
 # ==============================
@@ -55,6 +91,51 @@ PADROES_EQUIVALENCIA = {
     "seladora":["seladora", "selador"]
 }
 
+PADROES_INDICADORES = {
+    "SEGURANÇA": [
+        "segurança",
+        "seguranca"
+    ],
+
+    "QUALIDADE": [
+        "qualidade"
+    ],
+
+    "VOLUME": [
+        "volume"
+    ],
+
+    "PARADA TOTAL": [
+        "parada total"
+    ],
+
+    "PARADA POR FALHA": [
+        "parada por falha",
+        "falha"
+    ],
+
+    "PERDA DE NAKAMI": [
+        "perda nakami",
+        "perda de nakami"
+    ],
+
+    "PERDA DE EMBALAGEM": [
+        "perda embalagem",
+        "perda de embalagem"
+    ],
+
+    "GERAL": [
+        "geral"
+    ],
+
+    "NENHUM": [
+        "nenhum"
+    ],
+
+    "HORA HORA": [
+        "hora hora"
+    ]
+}
 
 def clean_columns(df):
     df.columns = [col.strip() for col in df.columns]
@@ -200,6 +281,110 @@ def clean_text(value):
         return ""
     return value.lower()
 
+
+def normalizar_indicadores(lista_indicadores):
+
+    texto = " ".join(
+        str(x).lower()
+        for x in lista_indicadores
+    )
+
+    resultado = []
+
+    # ======================
+    # SEGURANÇA
+    # ======================
+
+    if "seguran" in texto:
+        resultado.append("SEGURANÇA")
+
+    # ======================
+    # QUALIDADE
+    # ======================
+
+    if "qualidade" in texto:
+        resultado.append("QUALIDADE")
+
+    # ======================
+    # VOLUME
+    # ======================
+
+    if "volume" in texto:
+        resultado.append("VOLUME")
+
+    # ======================
+    # PARADA TOTAL
+    # ======================
+
+    if (
+        "parada total" in texto
+        or "total de parada" in texto
+        or "total de paradas" in texto
+        or "paradas totais" in texto
+    ):
+        resultado.append("PARADA TOTAL")
+
+    # ======================
+    # PARADA POR FALHA
+    # ======================
+
+    if (
+        "parada por falha" in texto
+        or "paradas por falha" in texto
+        or "por falha" in texto
+        or "falha" in texto
+    ):
+        resultado.append("PARADA POR FALHA")
+
+    # ======================
+    # PERDA DE NAKAMI
+    # ======================
+
+    if "nakami" in texto:
+        resultado.append("PERDA DE NAKAMI")
+
+    # ======================
+    # PERDA DE EMBALAGEM
+    # ======================
+
+    if (
+        "embalagem" in texto
+        or "embalgem" in texto
+        or "embalegem" in texto
+        or "emabalagem" in texto
+    ):
+        resultado.append("PERDA DE EMBALAGEM")
+
+    # ======================
+    # HORA HORA
+    # ======================
+
+    if "hora hora" in texto or "hora a hora" in texto:
+        resultado.append("HORA HORA")
+
+    # ======================
+    # GERAL
+    # ======================
+
+    if "geral" in texto:
+        resultado.append("GERAL")
+
+    # ======================
+    # CASOS SEM IMPACTO
+    # ======================
+
+    if (
+        "nenhum" in texto
+        or "não" == texto.strip()
+        or "sem impacto" in texto
+        or "sem desvio" in texto
+        or "n/a" in texto
+    ):
+        resultado.append("NENHUM")
+
+    return list(dict.fromkeys(resultado))
+
+
 stopwords_pt = [
     # Artigos
     "a", "o", "as", "os", "um", "uma", "uns", "umas",
@@ -223,6 +408,9 @@ stopwords_pt = [
     "ser", "estar", "ter", "haver",
     "foi", "era", "está", "estava",
     "teve", "tinha", "sendo", "são",
+
+    #TESTE
+    "turno", "inicio", "início"
 
     # 🔄 Formas comuns no texto
     #"inicio", "início", "final", "fim",
@@ -256,7 +444,6 @@ def calcular_modelo(textos):
     )
 
     matriz = vectorizer.fit_transform(textos)
-    #similaridade = cosine_similarity(matriz) #DEVO TIRAR ISSO DAQUI?
 
     return vectorizer, matriz
 
@@ -300,6 +487,9 @@ def padronizar_df(df):
     # parse
     df["Maquina"] = df["Maquina"].apply(parse_list)
     df["INDICADOR FORA"] = df["INDICADOR FORA"].apply(parse_list)
+    df["INDICADOR FORA"] = df["INDICADOR FORA"].apply(normalizar_indicadores)
+    df["INDICADORES_PADRONIZADOS"] = df["INDICADOR FORA"].copy()
+
 
     # NORMALIZAÇÃO (função sendo testada)
     
@@ -349,7 +539,18 @@ def padronizar_df(df):
     # 🧠 LIMPEZA
     # ======================
 
-    df["Fato"] = df["Fato"].apply(clean_text)
+    # Mantém texto original para exibição
+    df["Fato"] = df["Fato"].fillna("")
+
+    # Coluna utilizada pelo motor de similaridade
+    df["Fato_Processado"] = (
+        df["Fato"]
+        .apply(clean_text)
+        .apply(remover_acentos)
+        .apply(remover_maquinas_texto)
+        .apply(padronizar_termos_texto)
+    )
+
     df["Causa"] = df["Causa"].fillna("-")
     df["Ação"] = df["Ação"].fillna("-")
 
@@ -409,7 +610,127 @@ def mostrar_paginacao(total_paginas, prefixo):
             )
             st.rerun()
 
+def remover_acentos(texto):
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', texto)
+        if unicodedata.category(c) != 'Mn'
+    )
 
+def remover_maquinas_texto(texto):
+
+    texto = str(texto)
+
+    padroes = [
+
+        # ----------------------
+        # YOKOHAMA / YOK / YK
+        # ----------------------
+
+        # yk 1 e 2
+        r'\byk\s*\d+\s*e\s*\d+\b',
+
+        # yok 1 e 2
+        r'\byok\s*\d+\s*e\s*\d+\b',
+
+        # yokohama 1 e 2
+        r'\byokohama\s*\d+\s*e\s*\d+\b',
+
+        # yk 1,2,3
+        r'\byk\s*\d+(?:\s*,\s*\d+)+\b',
+
+        # yok 1,2,3
+        r'\byok\s*\d+(?:\s*,\s*\d+)+\b',
+
+        # yokohama 1,2,3
+        r'\byokohamas?\s*\d+(?:\s*,\s*\d+)+\b',
+
+        # upack 1,2
+        r'\bu[\s\-]?pack\s*\d+(?:\s*,\s*\d+)+\b',
+
+        # yokohama 1
+        r'\byokohama\s*\d+\b',
+
+        # yok 1
+        r'\byok\s*\d+\b',
+
+        # yk 1
+        r'\byk\s*\d+\b',
+
+        # yokohama1
+        r'\byokohama\d+\b',
+
+        # yok1
+        r'\byok\d+\b',
+
+        # yk1
+        r'\byk\d+\b',
+
+        # yokohama / yokohamas
+        r'\byokohamas?\b',
+
+        # yok
+        r'\byok\b',
+
+        # yk
+        r'\byk\b',
+
+        # ----------------------
+        # FLOWPACK
+        # ----------------------
+
+        r'\bflowpack\b',
+        r'\bflow\b',
+
+        # ----------------------
+        # U-PACK / UPACK
+        # ----------------------
+
+        # upack 1 e 2
+        r'\bu[\s\-]?pack\s*\d+\s*e\s*\d+\b',
+
+        # upack 1
+        r'\bu[\s\-]?pack\s*\d+\b',
+
+        # upack1
+        r'\bu[\s\-]?pack\d+\b',
+
+        # upack
+        r'\bu[\s\-]?pack\b',
+    ]
+
+    for padrao in padroes:
+
+        texto = re.sub(
+            padrao,
+            " ",
+            texto,
+            flags=re.IGNORECASE
+        )
+    
+    texto = re.sub(r'\s*-\s*', ' ', texto)
+    texto = re.sub(r'\s+', ' ', texto).strip()
+
+    return texto
+
+def padronizar_termos_texto(texto):
+
+    substituicoes = {
+
+        # raio x
+        r'\braio[\s\-]?x\b': 'raio_x',
+
+    }
+
+    for padrao, substituto in substituicoes.items():
+
+        texto = re.sub(
+            padrao,
+            substituto,
+            texto,
+            flags=re.IGNORECASE
+        )
+
+    return texto
 # ==============================
 # UPLOAD + PROCESSAMENTO
 # ==============================
@@ -457,15 +778,17 @@ else:
 # SIMILARIDADE
 # ==============================
 
-textos = df["Fato"].fillna("").tolist()
+textos = df["Fato_Processado"].fillna("").tolist()
 vectorizer, matriz = calcular_modelo(textos)
-
 
 # ==============================
 # FILTROS
 # ==============================
 
-if st.session_state.pagina == "lista":
+
+if (pagina_menu == "📋 Ocorrências" and st.session_state.pagina == "lista"):
+
+
 
     if "df" in st.session_state:
         if st.button("🔄 Trocar arquivo"):
@@ -624,7 +947,7 @@ if st.session_state.pagina == "lista":
     if query and len(query) >= 3:
 
         # vetor da busca
-        query_limpa = clean_text(query)
+        query_limpa = remover_acentos(clean_text(query))
         query_vec = vectorizer.transform([query_limpa])
 
         # similaridade com todos os registros
@@ -635,8 +958,8 @@ if st.session_state.pagina == "lista":
         df_filtrado["score"] = scores[df_filtrado.index]
 
         # boost para match exato
-        df_filtrado["score"] += df_filtrado["Fato"].apply(
-            lambda x: 0.2 if query.lower() in x else 0
+        df_filtrado["score"] += df_filtrado["Fato_Processado"].apply(
+            lambda x: 0.2 if query_limpa in x else 0
         )
 
         # filtra por relevância mínima
@@ -658,7 +981,7 @@ else:
 # 🟢 PAGINA 1 — LISTA
 # ==============================
 
-if st.session_state.pagina == "lista":
+if (pagina_menu == "📋 Ocorrências" and st.session_state.pagina == "lista"):
     
     #botão limpar filtro
     if st.button("⏹ Resetar filtros"):
@@ -724,7 +1047,7 @@ if st.session_state.pagina == "lista":
     for idx, row in df_pagina.iterrows():
 
         maquinas_texto = ", ".join(row["Maquina"])
-        indicador_texto = ", ".join(row["INDICADOR FORA"])
+        indicador_texto = ", ".join(row["INDICADOR FORA"]) or "-"
 
         with st.container():
 
@@ -747,6 +1070,7 @@ if st.session_state.pagina == "lista":
             # BOTÃO DE ABRIR DETALHE
             with col3:
                 if st.button("Ver", key=f"btn_{idx}"):
+                    st.session_state.similares_confirmados = []
                     st.session_state.idx_selecionado = idx
                     st.session_state.pagina = "detalhe"
                     st.rerun()
@@ -758,20 +1082,21 @@ if st.session_state.pagina == "lista":
 # 🔵 PAGINA 2 — DETALHE
 # ==============================
 
-if st.session_state.pagina == "detalhe":
+if (pagina_menu == "📋 Ocorrências" and st.session_state.pagina == "detalhe"):
 
     idx = st.session_state.idx_selecionado
     row = df.loc[idx]
 
     # 🔙 VOLTAR
     if st.button("⬅️ Voltar"):
+        st.session_state.similares_confirmados = []
         st.session_state.pagina = "lista"
         st.rerun()
 
     st.markdown("## 📌 Detalhe da Ocorrência")
 
     maquinas_texto = ", ".join(row["Maquina"])
-    indicador_texto = ", ".join(row["INDICADOR FORA"])
+    indicador_texto = ", ".join(row["INDICADOR FORA"]) or "-"
 
     st.markdown(f"### {indicador_texto}")
     st.write(f"📍 **{row['Linha']} | {maquinas_texto}**")
@@ -798,7 +1123,7 @@ if st.session_state.pagina == "detalhe":
     indices_similares = similares.argsort()[::-1]
 
     # remover o próprio índice
-    indices_similares = [i for i in indices_similares if i != idx][:100]
+    indices_similares = [i for i in indices_similares if i != idx][:500]
 
     lista_similares = []
 
@@ -819,7 +1144,7 @@ if st.session_state.pagina == "detalhe":
                 continue
 
         # SENSIBILIDADE
-        if similares[i] < 0.25:
+        if similares[i] < 0.20:
             continue
 
         lista_similares.append((i, similares[i]))
@@ -829,6 +1154,12 @@ if st.session_state.pagina == "detalhe":
     # ==============================
 
     total_similares = len(lista_similares)
+    if not st.session_state.similares_confirmados:
+        st.session_state.similares_confirmados = lista_similares.copy()
+    #if (
+        #len(st.session_state.similares_confirmados) == 0
+    #):
+        #st.session_state.similares_confirmados = lista_similares.copy()
 
     st.markdown("---")
     st.markdown(f"## 📊 Total de similares encontrados: **{total_similares}**")
@@ -844,41 +1175,80 @@ if st.session_state.pagina == "detalhe":
         st.write("Nenhuma ocorrência similar relevante")
 
     else:
-        for i, score in lista_similares[:10]:
+        if st.button("✅ Aplicar seleção"):
+                #st.success("Seleção aplicada!")
+                #st.toast("✅ Seleção aplicada!")
+            
+            similares_confirmados = []
+
+            for pos, (i, score) in enumerate(lista_similares):
+
+                considerar = st.session_state.get(
+                    f"similar_{idx}_{pos}",
+                    True
+                )
+
+                if considerar:
+                    similares_confirmados.append(
+                        (i, score)
+                    )
+
+            st.session_state.similares_confirmados = similares_confirmados
+
+            st.toast("✅ Seleção aplicada!")
+        
+        st.caption(
+            f"Ocorrências similares consideradas: {len(st.session_state.similares_confirmados)} de {total_similares}"
+        )
+        for pos, (i, score) in enumerate(lista_similares):
 
             outra = df.iloc[i]
             score = round(score, 2)
 
             maquinas_out = ", ".join(outra["Maquina"]) if outra["Maquina"] else "-"
 
-            
-            # Criar preview do fato
-            preview = outra["Fato"][:80] + "..." if len(outra["Fato"]) > 80 else outra["Fato"]
+            preview = (
+                outra["Fato"][:80] + "..."
+                if len(outra["Fato"]) > 80
+                else outra["Fato"]
+            )
 
-            # Tempo de impacto no título
             tempo = outra.get("Tempo de impacto", "-")
 
-            with st.expander(
-                f"🔎 Similar ({score}) | {outra['Data'].strftime('%d/%m/%Y')} | ⏱ {tempo} min | {preview}"
-            ):
+            col_check, col_exp = st.columns([1, 12])
 
-                col1, col2 = st.columns([2, 1])
+            with col_check:
 
-                with col1:
-                    st.markdown(f"📍 **{outra['Linha']} | {maquinas_out}**")
+                considerar = st.checkbox(
+                    "",
+                    value=True,
+                    key=f"similar_{idx}_{pos}"
+                )
 
-                with col2:
-                    st.write(f"{outra['TURNO']}")
-                    st.write(f"⏱ {outra.get('Tempo de impacto','-')} min")
+            icone_status = "🟢" if considerar else "🔴"
 
-                st.markdown("**📝 Fato:**")
-                st.write(outra["Fato"] if outra["Fato"] else "-")
+            with col_exp:
 
-                st.markdown("**🔍 Causa:**")
-                st.write(outra["Causa"] if outra["Causa"] else "-")
+                with st.expander(
+                    f"{icone_status} 🔎 Similar ({score}) | {outra['Data'].strftime('%d/%m/%Y')} | ⏱ {tempo} min | {preview}"
+                ):
+                    col1, col2 = st.columns([2, 1])
 
-                st.markdown("**⚙️ Ação:**")
-                st.write(outra["Ação"] if outra["Ação"] else "-")
+                    with col1:
+                        st.markdown(f"📍 **{outra['Linha']} | {maquinas_out}**")
+
+                    with col2:
+                        st.write(f"{outra['TURNO']}")
+                        st.write(f"⏱ {outra.get('Tempo de impacto','-')} min")
+
+                    st.markdown("**📝 Fato:**")
+                    st.write(outra["Fato"] if outra["Fato"] else "-")
+
+                    st.markdown("**🔍 Causa:**")
+                    st.write(outra["Causa"] if outra["Causa"] else "-")
+
+                    st.markdown("**⚙️ Ação:**")
+                    st.write(outra["Ação"] if outra["Ação"] else "-")
 
 
 
@@ -890,13 +1260,13 @@ if st.session_state.pagina == "detalhe":
         import altair as alt
         import numpy as np
 
-        if total_similares > 0:
+        if len(st.session_state.similares_confirmados) > 0:
 
             datas = []
             tipos = []
 
-            # SIMILARES
-            for i, score in lista_similares:
+            # SIMILARES CONFIRMADOS
+            for i, score in st.session_state.similares_confirmados:
                 outra = df.iloc[i]
                 datas.append(outra["Data"])
                 tipos.append("Similar")
@@ -968,7 +1338,7 @@ if st.session_state.pagina == "detalhe":
         tempos = []
         tempos_validos = []
 
-        for i, score in lista_similares:
+        for i, score in st.session_state.similares_confirmados:
             outra = df.iloc[i]
 
             tempo = outra.get("Tempo de impacto", None)
@@ -1044,8 +1414,8 @@ if st.session_state.pagina == "detalhe":
         turnos_data = []
         turnos_data = []
 
-        # similares
-        for i, score in lista_similares:
+        # similares confirmados
+        for i, score in st.session_state.similares_confirmados:
             outra = df.iloc[i]
 
             turno = outra.get("TURNO", "N/A")
@@ -1138,3 +1508,969 @@ if st.session_state.pagina == "detalhe":
                     st.write(f"{t}: {valor} min")
                 else:
                     st.write(f"{t}: sem dados válidos")
+########################################################################################
+# ==============================
+# 📊 ANÁLISE DE INDICADORES
+# ==============================
+
+if (pagina_menu == "📊 Análise de Indicadores" and st.session_state.pagina_analise == "lista"):
+    
+    st.info("Funcionalidade em construção")
+    st.header("📊 Análise de Indicadores")
+
+    if "df" in st.session_state:
+
+        if st.button(
+            "🔄 Trocar arquivo",
+            key="trocar_arquivo_analise"
+        ):
+
+            del st.session_state.df
+
+            for key in [
+                "dias",
+                "linha_sel",
+                "maq_sel",
+                "turno_sel",
+                "pagina_cards",
+                "lista_linhas",
+                "lista_maquinas",
+                "lista_turnos",
+
+                "linha_analise",
+                "maq_analise",
+                "turno_analise",
+                "periodo_analise",
+                "indicador_sel_analise",
+                "filtros_analise"
+            ]:
+
+                if key in st.session_state:
+                    del st.session_state[key]
+
+            st.session_state.pagina = "lista"
+            st.session_state.pagina_cards = 0
+
+            st.rerun()
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+
+        linhas_analise = [
+            "Todas"
+        ] + sorted(
+            df["Linha"].dropna().unique().tolist()
+        )
+
+        linha_analise = st.selectbox(
+            "Linha",
+            linhas_analise,
+            key="linha_analise"
+        )
+    with col2:
+
+        maquinas_analise = sorted(
+            set(
+                maquina
+                for lista in df["Maquina"]
+                for maquina in lista
+            )
+        )
+
+        maq_analise = st.multiselect(
+            "Máquina",
+            maquinas_analise,
+            key="maq_analise"
+        )
+    
+    with col3:
+
+        turnos_analise = sorted(
+            df["TURNO"].dropna().unique().tolist()
+        )
+
+        turno_analise = st.multiselect(
+            "Turno",
+            turnos_analise,
+            key="turno_analise"
+        )
+    
+    with col4:
+
+        periodo_analise = st.selectbox(
+            "Período",
+            [
+                "Todos os dias",
+                "Últimos 30 dias",
+                "Últimos 90 dias",
+                "Últimos 180 dias",
+                "Últimos 365 dias"
+            ],
+            key="periodo_analise"
+        )
+    
+    df_analise = df.copy()
+
+    if periodo_analise != "Todos os dias":
+
+        mapa_dias = {
+            "Últimos 30 dias": 30,
+            "Últimos 90 dias": 90,
+            "Últimos 180 dias": 180,
+            "Últimos 365 dias": 365
+        }
+
+        dias = mapa_dias[periodo_analise]
+
+        df_analise = df_analise[
+            df_analise["Data"] >= (
+                datetime.now() - timedelta(days=dias)
+            )
+        ]
+
+    if linha_analise != "Todas":
+        df_analise = df_analise[
+            df_analise["Linha"] == linha_analise
+        ]
+
+    if maq_analise:
+
+        df_analise = df_analise[
+            df_analise["Maquina"].apply(
+                lambda x: bool(
+                    set(x) & set(maq_analise)
+                )
+            )
+        ]
+    
+    if turno_analise:
+
+        df_analise = df_analise[
+            df_analise["TURNO"].isin(turno_analise)
+        ]
+
+    indicadores_disponiveis = sorted(
+        set(
+            indicador
+            for lista in df_analise["INDICADORES_PADRONIZADOS"]
+            for indicador in lista
+        )
+    )
+
+    if "indicador_sel_analise" not in st.session_state:
+        st.session_state.indicador_sel_analise = None
+
+    if (
+        st.session_state.indicador_sel_analise
+        not in indicadores_disponiveis
+    ):
+
+       if indicadores_disponiveis:
+            st.session_state.indicador_sel_analise = (indicadores_disponiveis[0])
+
+    indicador_sel = st.selectbox(
+        "Indicador",
+        indicadores_disponiveis,
+        index=indicadores_disponiveis.index(
+            st.session_state.indicador_sel_analise
+        ),
+        key="indicador_sel_analise"
+    )
+
+    st.session_state.filtros_analise = {
+        "linha": linha_analise,
+        "maq": maq_analise.copy(),
+        "turno": turno_analise.copy(),
+        "periodo": periodo_analise,
+        "indicador": indicador_sel
+    }
+    
+    df_indicador = df_analise[
+        df_analise["INDICADORES_PADRONIZADOS"].apply(
+            lambda x: indicador_sel in x
+        )
+    ]
+
+    #st.session_state.df_indicador_analise = (df_indicador.copy())
+
+    textos_indicador = (
+        df_indicador["Fato_Processado"]
+        .fillna("")
+        .tolist()
+    )
+
+    if len(textos_indicador) > 1:
+
+        vet_indicador = vectorizer.transform(
+            textos_indicador
+        )
+
+        matriz_sim = cosine_similarity(
+            vet_indicador
+        )
+
+    #st.metric(
+        #"Total de ocorrências",
+        #len(df_indicador)
+    #)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric(
+                "Total de ocorrências",
+                len(df_indicador)
+            )
+        #primeira_data = df_indicador["Data"].min()
+        #st.metric(
+            #"Primeira ocorrência",
+            #primeira_data.strftime("%d/%m/%Y")
+        #)
+    with col2:
+        total_linhas = df_indicador["Linha"].nunique()
+        
+        st.metric(
+            "Linhas afetadas",
+            total_linhas
+        )
+        #ultima_data = df_indicador["Data"].max()
+        #st.metric(
+            #"Última ocorrência",
+            #ultima_data.strftime("%d/%m/%Y")
+        #)
+    with col3:
+        maquinas_unicas = set()
+
+        for lista in df_indicador["Maquina"]:
+            maquinas_unicas.update(lista)
+
+        st.metric(
+            "Máquinas afetadas",
+            len(maquinas_unicas)
+        )
+        #total_linhas = df_indicador["Linha"].nunique()
+        #st.metric(
+            #"Linhas afetadas",
+            #total_linhas
+        #)
+    with col4:
+
+        #maquinas_unicas = set()
+        #for lista in df_indicador["Maquina"]:
+            #maquinas_unicas.update(lista)
+
+        #st.metric(
+            #"Máquinas afetadas",
+            #len(maquinas_unicas)
+        #)
+        st.empty()
+    st.markdown("---")
+    st.subheader("📊 Distribuição das ocorrências")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        st.markdown("### 🏭 Top Linhas")
+
+        linhas_contagem = (
+            df_indicador["Linha"]
+            .value_counts()
+            .head(10)
+        )
+
+        st.dataframe(
+            linhas_contagem.rename("Ocorrências")
+        )
+
+    with col2:
+
+        st.markdown("### ⚙️ Top Máquinas")
+        maquinas_explodidas = (
+            df_indicador[["Maquina"]]
+            .explode("Maquina")
+        )
+
+        maquinas_contagem = (
+            maquinas_explodidas["Maquina"]
+            .value_counts()
+            .head(10)
+        )
+
+        st.dataframe(
+            maquinas_contagem.rename("Ocorrências")
+        )
+
+    
+    #st.markdown("---")
+    #st.subheader("📝 Ocorrências consideradas")
+
+    #df_exibicao = df_indicador[
+        #[
+            #"Data",
+            #"Linha",
+            #"Fato"
+        #]
+    #].copy()
+
+    #df_exibicao["Máquinas"] = df_indicador["Maquina"].apply(
+        #lambda x: ", ".join(x)
+    #)
+
+    #df_exibicao = df_exibicao[
+        #[
+            #"Data",
+            #"Linha",
+            #"Máquinas",
+            #"Fato"
+        #]
+    #]
+
+    #st.dataframe(
+        #df_exibicao.sort_values(
+            #"Data",
+            #ascending=False
+        #),
+        #use_container_width=True
+    #)
+
+    #st.markdown("---")
+    #st.subheader("🔁 Fatos mais recorrentes")
+
+    #fatos_validos = (
+        #df_indicador["Fato"]
+        #.dropna()
+        #.astype(str)
+        #.str.strip()
+    #)
+
+    #fatos_validos = fatos_validos[
+        #fatos_validos != ""
+    #]
+
+    #top_fatos = (
+        #fatos_validos
+        #.value_counts()
+        #.head(20)
+    #)
+
+    #st.dataframe(
+        #top_fatos.rename("Ocorrências"),
+        #use_container_width=True
+    #)
+
+    st.markdown("---")
+    st.subheader("🧠 Agrupamentos Automáticos")
+
+    if len(df_indicador) <= 1:
+
+        st.info(
+            "Poucas ocorrências para agrupamento."
+        )
+    else:
+        #Depois apagar essa parte (se eu realmente ver que outro algoritmo é melhor),
+        #é uma tentativa de agrupamento que não ficou muito bom
+        #grupos = []
+        #visitados = set()
+
+        #limite = 0.60
+
+        #for i in range(len(df_indicador)):
+
+            #if i in visitados:
+                #continue
+
+            #grupo = [i]
+            #visitados.add(i)
+
+            #for j in range(len(df_indicador)):
+
+                #if j == i:
+                    #continue
+
+                #if matriz_sim[i, j] >= limite:
+
+                    #grupo.append(j)
+                    #visitados.add(j)
+
+            #grupos.append(grupo)
+
+        grupos = []
+        visitados = set()
+
+        limite = 0.60
+
+        for inicio in range(len(df_indicador)):
+
+            if inicio in visitados:
+                continue
+
+            grupo = []
+            fila = [inicio]
+
+            while fila:
+
+                atual = fila.pop()
+
+                if atual in visitados:
+                    continue
+
+                visitados.add(atual)
+                grupo.append(atual)
+
+                vizinhos = []
+
+                for j in range(len(df_indicador)):
+
+                    if matriz_sim[atual, j] >= limite:
+                        vizinhos.append(j)
+
+                fila.extend(vizinhos)
+
+            grupos.append(grupo)
+
+        grupos = sorted(grupos, key=len, reverse=True)
+
+        for n, grupo in enumerate(grupos[:25], start=1):
+
+            melhor_idx = None
+            melhor_score = -1
+
+            for candidato in grupo:
+                score_total = sum(
+                    matriz_sim[candidato, outro]
+                    for outro in grupo
+                )
+
+                if score_total > melhor_score:
+
+                    melhor_score = score_total
+                    melhor_idx = candidato
+
+            exemplo = df_indicador.iloc[melhor_idx]["Fato"]
+            col_a, col_b = st.columns([6, 1])
+
+            with col_a:
+
+                st.markdown(f"""**Grupo {n}** • {len(grupo)} ocorrências. **Exemplo:** {exemplo}""")
+
+            with col_b:
+
+                if st.button("📊 Ver análise", key=f"grupo_{n}"):
+
+                    st.session_state.grupo_selecionado = (df_indicador.iloc[grupo].copy())
+                    st.session_state.grupo_confirmado = (df_indicador.iloc[grupo].copy())
+                    st.session_state.titulo_grupo = exemplo
+                    st.session_state.filtros_grupo = (st.session_state.filtros_analise.copy())
+                    st.session_state.pagina_analise = "grupo"
+                    st.session_state.checkbox_grupo = {pos: True
+                        for pos in range(len(grupo))}
+
+                    st.rerun()
+
+            st.divider()
+
+if (pagina_menu == "📊 Análise de Indicadores" and st.session_state.pagina_analise == "grupo"):
+
+    if st.button("⬅ Voltar para os grupos"):
+
+        filtros = st.session_state.filtros_grupo
+
+        st.session_state.linha_analise = (filtros["linha"])
+
+        st.session_state.maq_analise = (filtros["maq"])
+
+        st.session_state.turno_analise = (filtros["turno"])
+
+        st.session_state.periodo_analise = (filtros["periodo"])
+
+        st.session_state.indicador_sel_analise = (filtros["indicador"])
+
+        st.session_state.grupo_selecionado = None
+
+        st.session_state.titulo_grupo = ""
+
+        st.session_state.pagina_analise = "lista"
+
+        st.rerun()
+
+
+    st.header("📊 Análise do Grupo")
+
+    st.subheader(
+        st.session_state.titulo_grupo
+    )
+
+    df_grupo = st.session_state.grupo_confirmado
+
+    datas_ordenadas = (
+        df_grupo["Data"]
+        .dropna()
+        .sort_values()
+    )
+
+    intervalos = datas_ordenadas.diff().dt.total_seconds() / 86400
+
+    intervalos = intervalos.dropna()
+
+    if len(intervalos) > 0:
+
+        tempo_medio_entre_ocorrencias = round(
+            intervalos.mean(),
+            1
+        )
+
+    else:
+
+        tempo_medio_entre_ocorrencias = "-"
+
+    tempos_validos = pd.to_numeric(
+        df_grupo["Tempo de impacto"],
+        errors="coerce"
+    ).fillna(0)
+
+    tempo_total = tempos_validos.sum()
+
+    tempo_medio = (
+        round(tempos_validos.mean(), 1)
+        if len(tempos_validos) > 0
+        else 0
+    )
+
+    data_max = df_grupo["Data"].max()
+
+    ultimos_30 = df_grupo[df_grupo["Data"] >= (data_max - timedelta(days=30))]
+
+    anteriores_30 = df_grupo[(df_grupo["Data"] < (data_max - timedelta(days=30)))
+        &
+        (df_grupo["Data"] >= (data_max - timedelta(days=60)))]
+
+    qtd_ultimos = len(ultimos_30)
+
+    qtd_anteriores = len(anteriores_30)
+
+    if qtd_anteriores > 0:
+
+        tendencia_pct = round(
+            (
+                (qtd_ultimos - qtd_anteriores)
+                / qtd_anteriores
+            ) * 100,
+            1
+        )
+
+    else:
+
+        tendencia_pct = None
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    with col1:
+
+        st.metric(
+            "Ocorrências",
+            len(df_grupo)
+        )
+
+    with col2:
+
+        st.metric(
+            "Tempo Total",
+            f"{int(tempo_total)} min"
+        )
+
+
+    with col3:
+
+        st.metric(
+            "Tempo Médio",
+            f"{tempo_medio} min"
+        )
+
+
+    with col4:
+
+        st.metric(
+            "Linhas Afetadas",
+            df_grupo["Linha"].nunique()
+        )
+
+    with col5:
+
+        maquinas_unicas = set()
+
+        for lista in df_grupo["Maquina"]:
+            maquinas_unicas.update(lista)
+
+        st.metric(
+            "Máquinas Afetadas",
+            len(maquinas_unicas)
+        )
+
+
+    col_a, col_b, col_c, col_d, col_e = st.columns(5)
+
+    with col_a:
+
+        st.metric(
+            "Tempo médio entre ocorrências",
+            (
+                f"{tempo_medio_entre_ocorrencias} dias"
+                if tempo_medio_entre_ocorrencias != "-"
+                else "-"
+            )
+        )
+
+    with col_b:
+        if tendencia_pct is not None:
+
+            if tendencia_pct > 0:
+
+                st.metric(
+                    "Tendência",
+                    f"↗ {tendencia_pct}%"
+                )
+
+            elif tendencia_pct < 0:
+
+                st.metric(
+                    "Tendência",
+                    f"↘ {abs(tendencia_pct)}%"
+                )
+
+            else:
+
+                st.metric(
+                    "Tendência",
+                    "0%"
+                )
+
+        else:
+
+            st.metric(
+                "Tendência",
+                "-"
+            )
+        st.caption(f"{qtd_ultimos} vs {qtd_anteriores} ocorrências")
+
+    with col_c:
+        st.empty()
+
+    with col_d:
+        st.empty()
+
+    with col_e:
+        st.empty()
+
+    st.markdown("---")
+    st.subheader("🏭 Distribuição por Linha")
+
+    df_linhas = df_grupo.copy()
+    df_linhas["Tempo_Num"] = pd.to_numeric(df_linhas["Tempo de impacto"],errors="coerce").fillna(0)
+    resumo_linhas = (df_linhas.groupby("Linha").agg(
+        Ocorrencias=("Linha", "count"),
+        Tempo_Total=("Tempo_Num", "sum")).sort_values("Ocorrencias",ascending=False))
+
+    total_ocorrencias = resumo_linhas["Ocorrencias"].sum()
+
+    total_tempo = resumo_linhas["Tempo_Total"].sum()
+
+    resumo_linhas["% Ocorrências"] = (
+        resumo_linhas["Ocorrencias"]
+        / total_ocorrencias
+        * 100
+    ).round(1)
+
+    resumo_linhas["% Tempo"] = (
+        resumo_linhas["Tempo_Total"]
+        / total_tempo
+        * 100
+    ).round(1)
+
+    resumo_linhas["% Acum. Ocorrências"] = (
+        resumo_linhas["% Ocorrências"]
+        .cumsum()
+        .round(1)
+    )
+
+    resumo_linhas["% Acum. Tempo"] = (
+        resumo_linhas["% Tempo"]
+        .cumsum()
+        .round(1)
+    )
+
+    resumo_linhas = resumo_linhas[
+        [
+            "Ocorrencias",
+            "% Ocorrências",
+            "% Acum. Ocorrências",
+            "Tempo_Total",
+            "% Tempo",
+            "% Acum. Tempo"
+        ]
+    ]
+
+    resumo_linhas = resumo_linhas.rename(
+            columns={
+                "Tempo_Total": "Tempo Total (min)",
+                "Ocorrencias": "Ocorrências"
+            }
+        )
+
+    st.dataframe(resumo_linhas, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("⚙️ Distribuição por Máquina")
+
+    df_maquinas = df_grupo.copy()
+    df_maquinas["Tempo_Num"] = pd.to_numeric(df_maquinas["Tempo de impacto"],errors="coerce").fillna(0)
+    df_maquinas = df_maquinas.explode("Maquina")
+    resumo_maquinas = (df_maquinas.groupby("Maquina").agg(
+        Ocorrencias=("Maquina", "count"),
+        Tempo_Total=("Tempo_Num", "sum")).sort_values("Ocorrencias",ascending=False))
+
+    total_ocorrencias = resumo_maquinas["Ocorrencias"].sum()
+
+    total_tempo = resumo_maquinas["Tempo_Total"].sum()
+
+    resumo_maquinas["% Ocorrências"] = (
+        resumo_maquinas["Ocorrencias"]
+        / total_ocorrencias
+        * 100
+    ).round(1)
+
+    resumo_maquinas["% Tempo"] = (
+        resumo_maquinas["Tempo_Total"]
+        / total_tempo
+        * 100
+    ).round(1)
+
+    resumo_maquinas["% Acum. Ocorrências"] = (
+        resumo_maquinas["% Ocorrências"]
+        .cumsum()
+        .round(1)
+    )
+
+    resumo_maquinas["% Acum. Tempo"] = (
+        resumo_maquinas["% Tempo"]
+        .cumsum()
+        .round(1)
+    )
+
+    resumo_maquinas = resumo_maquinas[
+        [
+            "Ocorrencias",
+            "% Ocorrências",
+            "% Acum. Ocorrências",
+            "Tempo_Total",
+            "% Tempo",
+            "% Acum. Tempo"
+        ]
+    ]
+
+    resumo_maquinas = resumo_maquinas.rename(
+        columns={
+            "Tempo_Total": "Tempo Total (min)",
+            "Ocorrencias": "Ocorrências"
+        }
+    )
+
+    st.dataframe(resumo_maquinas,use_container_width=True)
+    st.caption("* Uma mesma ocorrência pode estar associada a mais de uma máquina.")
+
+    st.markdown("---")
+    st.subheader("📈 Ocorrências ao longo do tempo")
+
+    df_temp = pd.DataFrame({"Data": pd.to_datetime(df_grupo["Data"]),
+                            "Linha": df_grupo["Linha"],
+                            "Fato": df_grupo["Fato"],
+                            "Turno": df_grupo["TURNO"]})
+
+    np.random.seed(42)
+
+    df_temp["y"] = np.random.uniform(
+        0.49,
+        0.51,
+        len(df_temp)
+    )
+
+    grafico = alt.Chart(df_temp).mark_circle(size=100).encode(
+            x=alt.X(
+                "Data:T",
+                title="Data",
+                axis=alt.Axis(
+                    format="%d/%m/%y"
+                )
+            ),
+
+            y=alt.Y(
+                "y:Q",
+                title="",
+                axis=None,
+                scale=alt.Scale(
+                    domain=[0.45, 0.55]
+                )
+            ),
+
+            color=alt.value("#4cc9f0"),
+
+            tooltip=[
+                alt.Tooltip(
+                    "Data:T",
+                    title="Data",
+                    format="%d/%m/%Y"
+                ),
+                alt.Tooltip("Linha:N",title="Linha"),
+                alt.Tooltip("Turno:N",title="Turno"),
+                alt.Tooltip("Fato:N",title="Fato")
+            ]
+        ).properties(height=180)
+
+    st.altair_chart(grafico,use_container_width=True)
+        
+    st.markdown("---")
+    st.subheader("🔵 Análise por turno")
+
+    turnos_data = []
+    for _, row in df_grupo.iterrows():
+
+        tempo = row.get(
+            "Tempo de impacto",
+            None
+        )
+
+        try:
+            tempo = float(tempo)
+        except:
+            tempo = None
+
+        turnos_data.append({
+            "Turno": row.get(
+                "TURNO",
+                "N/A"
+            ),
+            "Tempo": tempo
+        })
+
+    df_turnos = pd.DataFrame(turnos_data)
+    df_turnos_validos = df_turnos[df_turnos["Tempo"] > 0]
+    zeros_turno = (len(df_turnos) - len(df_turnos_validos))
+
+    turnos_ordem = [
+        "1° Turno",
+        "2° Turno",
+        "3° Turno"
+    ]
+
+    ocorrencias_turno = (df_turnos["Turno"].value_counts())
+    media_turno = (df_turnos_validos.groupby("Turno")["Tempo"].mean())
+    tempo_total_turno = (df_turnos_validos.groupby("Turno")["Tempo"].sum())
+    
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        st.markdown("### 📊 Ocorrências por turno")
+
+        for t in turnos_ordem:
+
+            valor = ocorrencias_turno.get(t,0)
+
+            st.write(f"{t}: {valor}")
+
+    with col2:
+
+        st.markdown("### ⏱ Tempo médio")
+
+        if zeros_turno > 0:
+                st.caption(f"⚠️ {zeros_turno} ocorrências com tempo 0 foram desconsideradas")
+
+        for t in turnos_ordem:
+            valor = media_turno.get(t, None)
+
+            if pd.notna(valor):
+                st.write(f"{t}: {round(valor,1)} min")
+
+            else:
+                st.write(f"{t}: sem dados")
+
+    with col3:
+
+        st.markdown("### 🕒 Tempo total")
+
+        for t in turnos_ordem:
+            valor = tempo_total_turno.get(t, None)
+
+            if pd.notna(valor):
+                st.write(f"{t}: {int(valor)} min")
+
+            else:
+                st.write(f"{t}: sem dados")
+
+    st.markdown("---")
+    st.subheader("📝 Ocorrências consideradas")
+
+    if st.button("✅ Aplicar seleção"):
+        ocorrencias_confirmadas = []
+
+        for pos, (_, row) in enumerate(st.session_state.grupo_selecionado.iterrows()):
+
+            st.session_state.checkbox_grupo[pos] = (
+                st.session_state.get(f"grupo_ocorrencia_{pos}", True))
+
+        for pos, (_, row) in enumerate(st.session_state.grupo_selecionado.iterrows()):
+            considerar = st.session_state.get(f"grupo_ocorrencia_{pos}", True)
+            if considerar:
+                ocorrencias_confirmadas.append(row)
+
+        if len(ocorrencias_confirmadas) > 0:
+
+            st.session_state.grupo_confirmado = (
+                pd.DataFrame(
+                    ocorrencias_confirmadas
+                )
+            )
+
+            st.toast("✅ Seleção aplicada!")
+            st.rerun()
+
+    total_original = len(st.session_state.grupo_selecionado)
+    total_confirmado = len(st.session_state.grupo_confirmado)
+    st.caption(f"Ocorrências consideradas: {total_confirmado} de {total_original}")
+
+    for pos, (_, row) in enumerate(st.session_state.grupo_selecionado.iterrows()):
+        col_check, col_texto = st.columns([1, 10])
+
+        with col_check:
+
+            considerar = st.checkbox("",value=st.session_state.checkbox_grupo.get(pos,True), 
+                                     key=f"grupo_ocorrencia_{pos}")
+
+        with col_texto:
+            tempo = row.get("Tempo de impacto", "-")
+            maquinas = ", ".join(row["Maquina"]) if row["Maquina"] else "-"
+            preview = (row["Fato"][:80] + "..." if len(row["Fato"]) > 80 else row["Fato"])
+
+            icone = "🟢" if considerar else "🔴"
+
+            with st.expander(
+                f"{icone} 🔎 "
+                f"{row['Data'].strftime('%d/%m/%Y')} | "
+                f"⏱ {tempo} min | "
+                f"{preview}"
+            ):
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    st.markdown("**📝 Fato:**")
+                    st.write(row["Fato"] if row["Fato"]  else "-")
+                    st.markdown("**🔍 Causa:**")
+                    st.write( row["Causa"] if row["Causa"] else "-")
+                    st.markdown("**⚙️ Ação:**")
+                    st.write(row["Ação"] if row["Ação"] else "-")
+
+                with col2:
+                    st.markdown( f"📍 **{row['Linha']} | {maquinas}**" )
+                    st.write(row["TURNO"])
+                    st.write(f"⏱ {tempo} min")
+
